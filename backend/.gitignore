@@ -1,2 +1,22 @@
-.vercel
+# Python virtual environments and caches
+.venv/
+venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Secrets; keep the example template trackable
 .env*
+!.env.example
+
+# Local database and generated files
+data/notes.json
+data/chromadb/
+*.log
+
+# Deployment metadata
+.vercel/

@@ -13,6 +13,7 @@ import ai_engine
 import rag_engine
 import os
 import jwt
+from jwt import PyJWKClient
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
@@ -85,13 +86,25 @@ def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
         token = authorization[7:]
     
     try:
-        # Decode the Supabase JWT
-        # Supabase uses the JWT_SECRET from project settings
-        if JWT_SECRET:
+        algorithm = jwt.get_unverified_header(token).get("alg")
+        if algorithm == "HS256" and JWT_SECRET:
+            # Older Supabase projects can still issue tokens using the legacy secret.
             payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"], audience="authenticated")
+        elif algorithm in {"ES256", "RS256"} and SUPABASE_URL:
+            # Current Supabase signing keys are asymmetric and published as JWKS.
+            jwks_url = f"{SUPABASE_URL.rstrip('/')}/auth/v1/.well-known/jwks.json"
+            signing_key = PyJWKClient(jwks_url).get_signing_key_from_jwt(token)
+            payload = jwt.decode(
+                token,
+                signing_key.key,
+                # The JWT header is untrusted, so only accept the explicit
+                # asymmetric algorithms allowed above; PyJWK compatibility
+                # varies across PyJWT versions for algorithm metadata.
+                algorithms=[algorithm],
+                audience="authenticated",
+            )
         else:
-            # Fallback: decode without verification (dev mode)
-            payload = jwt.decode(token, options={"verify_signature": False})
+            raise HTTPException(status_code=401, detail="Unsupported token signing key or algorithm")
         
         user_id = payload.get("sub")
         email = payload.get("email")
@@ -100,10 +113,14 @@ def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
             raise HTTPException(status_code=401, detail="Invalid token: no user ID")
         
         return {"id": user_id, "email": email}
+    except HTTPException:
+        raise
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
     except jwt.InvalidTokenError as e:
         raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Could not verify login token: {str(e)}")
 
 
 def get_optional_user(authorization: Optional[str] = Header(None)) -> Optional[dict]:
